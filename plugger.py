@@ -66,9 +66,11 @@ class pluggerThread:
 		self.identified = False
 
 		self.out = ''
+		self.log = ''
 
 	def run(self, lmsg, net, name, pconf, zomgthefiles):
 		self.out = ''
+		self.log = ''
 		self.pconf = pconf
 		self.zomgthefiles = zomgthefiles
 
@@ -729,6 +731,7 @@ class pluggerThread:
 		if plugin == 'dst':
 			command += " '" + self.nick + "' '" + text + "'"
 		plugproc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+		pid = plugproc.pid
 		pipe, err = plugproc.communicate()
 		if plugproc.returncode != 0:
 			self.say(self.chan, "I accidentally teh %s (plugin %s). Details in %s" %(keyword, plugin, self.Options['debugchannel']))

@@ -75,6 +75,13 @@ class doIRC(threading.Thread):
 					taco.outQueue.put(line)
 				break # Dedenting this costs 1 day of debugging
 
+	def log(self, name, stuff):
+		for taco in fls:
+			if taco.name == name:
+				for line in stuff.splitlines(True):
+					taco.log("[" + self.name + "]" + line, 2)
+				break # Dedenting this costs 1 day of debugging
+
 	def run(self):
 		while 1:
 			Options, name, msg = ircQueue.get()
@@ -101,6 +108,8 @@ class doIRC(threading.Thread):
 				self.sendRaw(name, "PRIVMSG " + Options['debugchannel'] + " :["+self.name+"] Core caught an unhandled exception in plugger. I'd tell you more, but some asshole decided to delete backtrace code from core.\r\n")
 			if self.ninja.out.strip():
 				self.sendRaw(self.ninja.network, self.ninja.out)
+			if self.ninja.log.strip():
+				self.log(self.ninja.network, self.ninja.log)
 			ircQueue.task_done()
 
 
@@ -121,10 +130,13 @@ class linkIRC(threading.Thread):
 		attempts = 1
 		while 1:
 			try:
+				self.log("doConnect() commencing attempt #"+str(attempts), 2)
 				self.socket = socket.socket()
 				self.socket.connect((self.Options['host'], int(self.Options['port'])))
+				self.log("doConnect() has established a connection to the server", 2)
 				break
 			except socket.error:
+				self.log("doConnect() failed this attempt", 2)
 				if attempts > 3:
 					return False
 				time.sleep(3)
@@ -149,17 +161,22 @@ class linkIRC(threading.Thread):
 	def run(self):
 		while 1:
 			if not self.doConnect(): # connect puked
-				return
+				self.log("run() is setting the suicide bit because a connection could not be established.", 2)
+				self.suicide = True
 			inHandler = threading.Thread(target=self.doRead, args=(ircQueue,))
-			inHandler.start()
 			outHandler = threading.Thread(target=self.doWrite, args=(self.outQueue,))
-			outHandler.start()
+			if not self.suicide:
+				inHandler.start()
+				outHandler.start()
 			while 1:
 				try:
 					logline = self.logQueue.get(block=True, timeout=10)
 				except:
 					if not inHandler.is_alive() and not outHandler.is_alive():
 						if self.suicide: # shutdown
+							self.log("run() is returning in response to suicide bit. There will be no further log entries.", 2)
+							self.logfile.write(logline)
+							self.logQueue.task_done()
 							return
 						elif self.reconnect: # reconnect
 							self.reconnect = False
@@ -191,10 +208,17 @@ class linkIRC(threading.Thread):
 					rbuffer="" # clear buffer
 				else:
 					rbuffer=temp.pop() # last element prolly incomplete... keep in buffer
+					self.log("NOTE: Input lines were read, but this last part was left in the buffer because it isn't terminated with \\r\\n:" + rbuffer, 2)
 				for msg in temp:
 					if msg.strip():
 						self.log(msg+'\r\n', 0)
 						iq.put((self.Options, self.name, msg))
+			elif "\r" in rbuffer:
+				self.log("WARNING: Input buffer contains a \\r by itself. This should rarely happen.", 2)
+			elif "\n" in rbuffer:
+				self.log("WARNING: Input buffer contains a \\n by itself. This should rarely happen.", 2)
+			if self.suicide or self.reconnect:
+				self.log("HUGE ASS WARNING: doRead() is continuing to next loop when suicide and/or reconnect is true.", 2)
 
 	def doWrite(self, oq):
 		sbuffer = ''
