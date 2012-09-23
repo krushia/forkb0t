@@ -113,6 +113,167 @@ class doIRC(threading.Thread):
 			ircQueue.task_done()
 
 
+class lineBasedClient(threading.Thread):
+	def __init__(self, name, args):
+		self.Options = args
+		self.inQueue = Queue.Queue()
+		self.outQueue = Queue.Queue()
+		#self.socket = socket.socket()
+		self.logfile = open(name+'.log.txt', 'a', 0)
+		self.logQueue = Queue.Queue()
+		self.suicide = False
+		self.reconnect = False
+		self.rapidlines = 0
+		self.lastsendtime = 0
+		threading.Thread.__init__(self, name=name)
+
+	def doConnect(self):
+		attempts = 1
+		while 1:
+			try:
+				self.log("doConnect() commencing attempt #"+str(attempts)+"\r\n", 2)
+				self.socket = socket.socket()
+				self.socket.connect((self.Options['host'], int(self.Options['port'])))
+				self.log("doConnect() has established a connection to the server\r\n", 2)
+				break
+			except socket.error:
+				self.log("doConnect() failed this attempt\r\n", 2)
+				if attempts > 3:
+					return False
+				time.sleep(3)
+				attempts += 1
+		return True
+
+	def doLogin(self):
+		return True
+
+	def doMunch(self, iq):
+		while 1:
+			try:
+				Options, name, msg = self.inQueue.get(block=True, timeout=10)
+			except Queue.Empty:
+				if self.reconnect:
+					return
+				continue
+			iq.put((self.Options, self.name, msg))
+			self.inQueue.task_done()
+
+	def run(self):
+		while 1:
+			if not self.doConnect(): # connect puked
+				self.log("run() is setting the suicide bit because a connection could not be established.\r\n", 2)
+				self.suicide = True
+			if not self.doLogin(): # login puked
+				self.log("run() is setting the suicide bit because we failed login.\r\n", 2)
+				self.suicide = True
+			inHandler = threading.Thread(target=self.doRead)
+			munchHandler = threading.Thread(target=self.doMunch, args=(ircQueue,))
+			outHandler = threading.Thread(target=self.doWrite)
+			if not self.suicide:
+				inHandler.start()
+				munchHandler.start()
+				outHandler.start()
+			while 1:
+				try:
+					logline = self.logQueue.get(block=True, timeout=10)
+				except:
+					if not inHandler.is_alive() and not outHandler.is_alive():
+						if self.suicide: # shutdown
+							self.log("run() is returning in response to suicide bit. There will be no further log entries.\r\n", 2)
+							self.logfile.write(logline)
+							self.logQueue.task_done()
+							return
+						elif self.reconnect: # reconnect
+							self.reconnect = False
+							break
+						else:
+							continue
+					else:
+						continue
+				self.logfile.write(logline)
+				self.logQueue.task_done()
+
+	def doRead(self):
+		rbuffer = ''
+		while 1:
+			try:
+				poppy = self.socket.recv(4096)
+			except:
+				if not self.suicide:
+					self.reconnect = True
+					self.log('SOCKET READ ERROR, RESTARTING\r\n', 2)
+					self.socket.close()
+				return
+			if not poppy:
+				continue
+			rbuffer+=poppy
+			if "\r\n" in rbuffer:
+				temp=rbuffer.split("\r\n")
+				if rbuffer.endswith("\r\n"):
+					rbuffer="" # clear buffer
+				else:
+					rbuffer=temp.pop() # last element prolly incomplete... keep in buffer
+					self.log("NOTE: Input lines were read, but this last part was left in the buffer because it isn't terminated with \\r\\n:" + rbuffer + "\r\n", 2)
+				for msg in temp:
+					if msg.strip():
+						self.log(msg+'\r\n', 0)
+						self.inQueue.put((self.Options, self.name, msg))
+			elif "\r" in rbuffer:
+				self.log("WARNING: Input buffer contains a \\r by itself. This should rarely happen.\r\n", 2)
+			elif "\n" in rbuffer:
+				self.log("WARNING: Input buffer contains a \\n by itself. This should rarely happen.\r\n", 2)
+			if self.suicide or self.reconnect:
+				self.log("HUGE ASS WARNING: doRead() is continuing to next loop when suicide and/or reconnect is true.\r\n", 2)
+
+	def doWrite(self):
+		sbuffer = ''
+		while 1:
+			try:
+				sbuffer = self.outQueue.get(block=True, timeout=10)
+			except Queue.Empty:
+				if self.reconnect:
+					return
+				continue
+			# in-band signaling ftw :P
+			if sbuffer == 'DIAF\r\n':
+				self.suicide = True
+				self.log('Suiciding cuz pluggar (we hope) said to\r\n', 2)
+				self.outQueue.task_done()
+				self.socket.close()
+				return
+			if sbuffer == 'PHOENIX\r\n':
+				self.reconnect = True
+				self.log('Restarting cuz pluggar (we hope) said to\r\n', 2)
+				self.outQueue.task_done()
+				self.socket.close()
+				return
+			try:
+				self.socket.sendall(sbuffer)
+				self.log(sbuffer, 1)
+				self.outQueue.task_done()
+				if time.time() <= self.lastsendtime + 1:
+					self.rapidlines += 1
+				else:
+					self.rapidlines = 0
+				self.lastsendtime = time.time()
+				if self.rapidlines >= 2:
+					time.sleep(1+self.rapidlines)
+			except:
+				self.reconnect = True
+				self.log('SOCKET WRITE ERROR, RESTARTING\r\n', 2)
+				self.outQueue.task_done()
+				self.socket.close()
+				return
+
+	def log(self, text, prefix):
+		# 0 = in
+		# 1 = out
+		# 2 = error/info
+		prefixes = [' ', ' >>>', ' ***']
+		self.logQueue.put(str(int(time.time()*1000.0))+prefixes[prefix]+text)
+
+
+
 class linkIRC(threading.Thread):
 	def __init__(self, name, args):
 		self.Options = args
