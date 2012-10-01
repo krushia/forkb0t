@@ -155,6 +155,25 @@ class lineBasedClient(threading.Thread):
 				if self.reconnect:
 					return
 				continue
+			self.msgtype, self.chan, self.nick, self.msgtext, self.paramdict = self.munch(msg)
+			self.swallow(Options, name, msg)
+			iq.put((self.Options, self.name, msg))
+			self.inQueue.task_done()
+	
+	def munch(self, msg):
+		return msg
+
+	def swallow(self):
+		return
+	
+	def doDigest(self, iq):
+		while 1:
+			try:
+				Options, name, msg = self.inQueue.get(block=True, timeout=10)
+			except Queue.Empty:
+				if self.reconnect:
+					return
+				continue
 			iq.put((self.Options, self.name, msg))
 			self.inQueue.task_done()
 
@@ -205,7 +224,11 @@ class lineBasedClient(threading.Thread):
 					self.socket.close()
 				return
 			if not poppy:
-				continue
+				if not self.suicide:
+					self.reconnect = True
+					self.log('doRead() detected possible connection loss.\r\n', 2)
+					self.socket.close()
+				return
 			rbuffer+=poppy
 			if "\r\n" in rbuffer:
 				temp=rbuffer.split("\r\n")
@@ -274,34 +297,9 @@ class lineBasedClient(threading.Thread):
 
 
 
-class linkIRC(threading.Thread):
-	def __init__(self, name, args):
-		self.Options = args
-		self.outQueue = Queue.Queue()
-		#self.socket = socket.socket()
-		self.logfile = open(name+'.log.txt', 'a', 0)
-		self.logQueue = Queue.Queue()
-		self.suicide = False
-		self.reconnect = False
-		self.rapidlines = 0
-		self.lastsendtime = 0
-		threading.Thread.__init__(self, name=name)
 
-	def doConnect(self):
-		attempts = 1
-		while 1:
-			try:
-				self.log("doConnect() commencing attempt #"+str(attempts)+"\r\n", 2)
-				self.socket = socket.socket()
-				self.socket.connect((self.Options['host'], int(self.Options['port'])))
-				self.log("doConnect() has established a connection to the server\r\n", 2)
-				break
-			except socket.error:
-				self.log("doConnect() failed this attempt\r\n", 2)
-				if attempts > 3:
-					return False
-				time.sleep(3)
-				attempts += 1
+class linkIRC(lineBasedClient):
+	def doLogin(self):
 		#TODO: Insert PASS here
 		self.outQueue.put("NICK %s\r\n" % self.Options['nick'])
 		# Note the USER below is RFC2812 and varies significantly from original codebase
@@ -319,114 +317,190 @@ class linkIRC(threading.Thread):
 		#self.socket.settimeout(0.0)
 		return True
 
-	def run(self):
-		while 1:
-			if not self.doConnect(): # connect puked
-				self.log("run() is setting the suicide bit because a connection could not be established.\r\n", 2)
-				self.suicide = True
-			inHandler = threading.Thread(target=self.doRead, args=(ircQueue,))
-			outHandler = threading.Thread(target=self.doWrite, args=(self.outQueue,))
-			if not self.suicide:
-				inHandler.start()
-				outHandler.start()
-			while 1:
-				try:
-					logline = self.logQueue.get(block=True, timeout=10)
-				except:
-					if not inHandler.is_alive() and not outHandler.is_alive():
-						if self.suicide: # shutdown
-							self.log("run() is returning in response to suicide bit. There will be no further log entries.\r\n", 2)
-							self.logfile.write(logline)
-							self.logQueue.task_done()
-							return
-						elif self.reconnect: # reconnect
-							self.reconnect = False
-							break
-						else:
-							continue
+	def munch(self, msg):
+	# New complete message parser
+	# Replaces findType(), findChannel(), and findNick()
+		headerdict = {}
+		if msg.startswith(':'):
+			splitmsg = msg.split(None, 2)
+			prefix = splitmsg[0][1:]
+			if '!' in prefix:
+				nickname, temp = prefix.split('!')
+				user, host = temp.split('@')
+				rnick = nickname # remove when forky gets smart
+			elif '@' in prefix:
+				nickname, host = prefix.split('@')
+				rnick = nickname # remove when forky gets smart
+			else:
+				servername = prefix
+				rnick = servername # remove when forky gets smart
+			splitmsg.pop(0)
+		else:
+			splitmsg = msg.split(None, 1)
+			rnick = 'dumb0t' # remove when forky gets smart
+		command = splitmsg[0]
+		rmsgtext = splitmsg[1] # remove when forky gets smart
+		if ':' in splitmsg[1]:
+			a, b, c = splitmsg[1].partition(':')
+			if a == '':
+				params = [c]
+			else:
+				params = a.split()
+				if c != '':
+					params.append(c)
+		else:
+			params = splitmsg[1].split()
+
+		# A note on the naming of paramdict entries...
+		#  While writing this function, I had the RFC open and was making
+		#  sure that it was followed 100%. To this end, I decided to use the
+		#  exact naming from the RFC for parameters to commands.
+		#  ... it seemed like a good idea at first ...
+		#  However, it turns out that the RFC was written by those who aren't
+		#  gifted in the art of technical writing, as you can plainly see in
+		#  the code below. There is an annoying lack of consistency in format
+		#  of names. Most astounding are "text" for PRIVMSG and
+		#  "text to be sent" for NOTICE. Also confusion of "user" and "nickname"
+		paramdict = {}
+
+		# Not implemented:
+		# OPER, SERVICE, SQUIT, NAMES, LIST,
+		if command == 'PASS': # Not from server
+			paramdict['password'] = params[0]
+		elif command == 'NICK':
+			paramdict['nickname'] = params[0]
+		elif command == 'USER': # Not from server
+			paramdict['user'] = params[0]
+			paramdict['mode'] = params[1]
+			paramdict['unused'] = params[2]
+			paramdict['realname'] = params[3]
+		elif command == 'MODE':
+			pass
+			#if params[0] == nickname: # Not from server
+			#	paramdict['nickname'] = params[0]
+			#	 rest are a list of mode changes
+			#if params[0] != nickname:
+			#	paramdict['channel'] = params[0]
+			#	 rest is a bunch of stuff to uberparse
+		elif command == 'QUIT':
+			pass
+			#paramdict['quit_message'] = params[0] # Note that quit message is optional
+			# insert netsplit checks here
+		elif command == 'JOIN': # Note we don't check lists, since RFC says servers should not return them
+			paramdict['channel'] = params[0]
+		elif command == 'PART':
+			paramdict['channel'] = params[0]
+			#paramdict['part_message'] = params[1] # Note that part message is optional
+		elif command == 'TOPIC':
+			paramdict['channel'] = params[0]
+			paramdict['topic'] = params[1]
+		elif command == 'INVITE':
+			paramdict['nickname'] = params[0]
+			paramdict['channel'] = params[1]
+		elif command == 'KICK':
+			paramdict['channel'] = params[0]
+			paramdict['user'] = params[1]
+			#paramdict['comment'] = params[2] # comment is optional
+		elif command == 'PRIVMSG':
+			paramdict['msgtarget'] = params[0]
+			paramdict['text_to_send'] = params[1]
+			rmsgtext = paramdict['text_to_send'] # remove when forky gets smart
+		elif command == 'NOTICE':
+			paramdict['msgtarget'] = params[0]
+			paramdict['text'] = params[1]
+			rmsgtext = paramdict['text'] # remove when forky gets smart
+		elif command == 'PING':
+			paramdict['server1'] = params[0]
+			# we don't check for server2
+		elif command == 'ERROR': #should only get when connection is terminated
+			paramdict['error_message'] = params[0]
+
+		try: # remove when forky gets smart
+			rchan =  paramdict['channel'] # remove when forky gets smart
+		except: # remove when forky gets smart
+			try: # remove when forky gets smart
+				rchan = paramdict['msgtarget'] # remove when forky gets smart
+				if self.Options['nick'] in rchan: # remove when forky gets smart
+					rchan = rnick # remove when forky gets smart
+			except: # remove when forky gets smart
+				rchan = self.Options['debugchannel'] # remove when forky gets smart
+		return command, rchan, rnick, rmsgtext, paramdict
+
+	def swallow(self):
+		CAPAB_IDENTIFY_MSG = True # temporary, till we get data stuff
+		if self.msgtype == '290':
+			if "IDENTIFY-MSG" in self.msg:
+				CAPAB_IDENTIFY_MSG = True
+		self.identified = False # reset here every scan
+		if CAPAB_IDENTIFY_MSG:
+			if self.msgtype in ['PRIVMSG', 'NOTICE']:
+				if self.msgtext[:1] in ["+", "-"]:
+					if self.msgtext[:1] == "+":
+						self.identified = True
+					self.msgtext = self.msgtext[1:]
+
+		# Somewhat out of place but critical... play pingpong with ircd
+		if self.msgtype == 'PING':
+			self.sendRaw("PONG %s\r\n" %self.msg.partition(':')[2])
+
+		# HAX - 2nd half of !names... read response fron nickserv
+		# 353 RPL_NAMREPLY - defined in RFC1459 and RFC2812
+		#  msgtext is same in both definitions, but header varies
+		elif self.msgtype == '353':
+			self.online = []
+			for name in self.msgtext.split():
+				if name.startswith('@') or name.startswith('+'):
+					name = name[1:]
+				if name not in self.online:
+					self.online.append(name)
+
+		# When someone leaves the channel, remove from online list
+		elif self.msgtype in ['PART', 'QUIT']:
+			if self.nick in self.online:
+				self.online.remove(self.nick)
+
+		elif self.msgtype == 'PRIVMSG':
+			# If someone talks, they must be online. Add them to online list if missing.
+			if self.nick not in self.online:
+				self.online.append(self.nick)
+
+			########################################
+			# BEGIN PRIVMSG INTERNAL COMMAND CHECK #
+			########################################
+
+			# CTCP responses
+			if self.msgtext.startswith("\001"):
+				# chan == nick makes sure we do not send replies to channel
+				# CTCP spammers.
+				if "\001ACTION" not in self.msgtext and self.chan == self.nick:
+					if not self.msgtext.endswith("\001"):
+						self.spam("WARNING: CTCP from "+self.nick+"possibly malformed (doesn't end with \\001) - parsing anyway")
+					if self.msgtext.startswith("\001CLIENTINFO"):
+						self.sendRaw("NOTICE " + self.nick + " :\001CLIENTINFO ACTION CLIENTINFO PING TIME URL USERINFO VERSION\001\r\n")
+					elif self.msgtext.startswith("\001PING"):
+						self.sendRaw("NOTICE " + self.nick + " :" + self.msgtext + "\r\n")
+					elif self.msgtext.startswith("\001TIME"):
+						# Returned in RFC 2822 format per http://www.invlogic.com/irc/ctcp.html
+						#  well.. technically it calls for RFC 822, which differs by using 2-digit year
+						#  however, it seems most IRC clients use 4-digit, so we should be safe
+						# ...
+						# On the other hand, irssi and Konversation return a different format,
+						#  http://www.irchelp.org/irchelp/rfc/ctcpspec.html but sans timezone!
+						self.sendRaw("NOTICE " + self.nick + " :\001TIME " +time.strftime("%a, %d %b %Y %H:%M:%S %z")+"\001\r\n")
+					elif self.msgtext.startswith("\001URL"):
+						self.sendRaw("NOTICE " + self.nick + " :\001URL http://www.gentoo-pr0n.org/forkb0t:forkb0t\001\r\n")
+					elif self.msgtext.startswith("\001USERINFO"):
+						self.sendRaw("NOTICE " + self.nick + " :\001USERINFO A friendly b0t based in the #gentoo-pr0n channel on Freenode. Owner is krushia on IRC, who can also be contacted at forkb0t@kenrushia.com\001\r\n")
+					elif self.msgtext.startswith("\001VERSION"):
+						# Note we go by http://www.invlogic.com/irc/ctcp.html
+						# somewhat different than http://www.irchelp.org/irchelp/rfc/ctcpspec.html
+						# also we don't quote
+						self.sendRaw("NOTICE " + self.nick + " :\001VERSION forkb0t 0.1 - by krushia\001\r\n")
+					elif self.msgtext.startswith("\001DCC CHAT"):
+						a, b, c = self.msgtext.partition('CHAT')[2].strip().split()
+						self.spam("GOT CTCP DCC CHAT from "+self.nick+". protocol: "+a+"  ip: "+self.unDccIP(int(b))+"  port: "+c)
 					else:
-						continue
-				self.logfile.write(logline)
-				self.logQueue.task_done()
-
-	def doRead(self, iq):
-		rbuffer = ''
-		while 1:
-			try:
-				poppy = self.socket.recv(4096)
-			except:
-				if not self.suicide:
-					self.reconnect = True
-					self.log('SOCKET READ ERROR, RESTARTING\r\n', 2)
-					self.socket.close()
-				return
-			if not poppy:
-				continue
-			rbuffer+=poppy
-			if "\r\n" in rbuffer:
-				temp=rbuffer.split("\r\n")
-				if rbuffer.endswith("\r\n"):
-					rbuffer="" # clear buffer
-				else:
-					rbuffer=temp.pop() # last element prolly incomplete... keep in buffer
-					self.log("NOTE: Input lines were read, but this last part was left in the buffer because it isn't terminated with \\r\\n:" + rbuffer + "\r\n", 2)
-				for msg in temp:
-					if msg.strip():
-						self.log(msg+'\r\n', 0)
-						iq.put((self.Options, self.name, msg))
-			elif "\r" in rbuffer:
-				self.log("WARNING: Input buffer contains a \\r by itself. This should rarely happen.\r\n", 2)
-			elif "\n" in rbuffer:
-				self.log("WARNING: Input buffer contains a \\n by itself. This should rarely happen.\r\n", 2)
-			if self.suicide or self.reconnect:
-				self.log("HUGE ASS WARNING: doRead() is continuing to next loop when suicide and/or reconnect is true.\r\n", 2)
-
-	def doWrite(self, oq):
-		sbuffer = ''
-		while 1:
-			try:
-				sbuffer = oq.get(block=True, timeout=10)
-			except Queue.Empty:
-				if self.reconnect:
-					return
-				continue
-			# in-band signaling ftw :P
-			if sbuffer == 'DIAF\r\n':
-				self.suicide = True
-				self.log('Suiciding cuz pluggar (we hope) said to\r\n', 2)
-				oq.task_done()
-				self.socket.close()
-				return
-			if sbuffer == 'PHOENIX\r\n':
-				self.reconnect = True
-				self.log('Restarting cuz pluggar (we hope) said to\r\n', 2)
-				oq.task_done()
-				self.socket.close()
-				return
-			try:
-				self.socket.sendall(sbuffer)
-				self.log(sbuffer, 1)
-				oq.task_done()
-				if time.time() <= self.lastsendtime + 1:
-					self.rapidlines += 1
-				else:
-					self.rapidlines = 0
-				self.lastsendtime = time.time()
-				if self.rapidlines >= 2:
-					time.sleep(1+self.rapidlines)
-			except:
-				self.reconnect = True
-				self.log('SOCKET WRITE ERROR, RESTARTING\r\n', 2)
-				oq.task_done()
-				self.socket.close()
-				return
-
-	def log(self, text, prefix):
-		# 0 = in
-		# 1 = out
-		# 2 = error/info
-		prefixes = [' ', ' >>>', ' ***']
-		self.logQueue.put(str(int(time.time()*1000.0))+prefixes[prefix]+text)
+						self.spam("Unknown CTCP command... "+self.msgtext.partition("\001")[2].partition("\001")[0])
 
 
 class linkDCC(threading.Thread):
