@@ -160,7 +160,7 @@ class lineBasedClient(threading.Thread):
 			iq.put((self.Options, self.name, msg))
 			self.inQueue.task_done()
 	
-	def munch(self, msg):
+	def munch(self, raw):
 		return msg
 
 	def swallow(self):
