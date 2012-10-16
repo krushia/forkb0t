@@ -1,0 +1,123 @@
+forkb0t stream language
+=======================
+A mini language that is used to tell forkb0t how to run plugins.
+The interpreter has one buffer, and can read and write variables in a structure defined by forkcore.
+
+<foo> is a variable or a 'literal'
+
+Special variables:
+error
+	Standard error from the previous run command.
+stream
+	Standard output from the previous run command, and standard input to the next run command.
+	If stream is an empty string, no standard input will be opened for the next run command.
+	The contents of stream after the last command are passed to the next filterchain.
+
+
+Commands:
+append <foo>
+	Adds <foo> to the end of the buffer
+clear
+	Deletes the contents of the buffer (becomes an empty string)
+filter <filter>
+	Run the contents of the buffer through the specified filter.
+	The result is then stored into the buffer, replacing the original contents.
+	Filters are plugins themselves.
+load <foo>
+	Puts <foo> in the buffer, replacing any existing contents
+run
+	Runs a command, with the contents of stream passed as standard input,
+	and subsequently overwritten with standard output.
+save <foo>
+	Places the contents of the buffer in <foo>
+	Existing data in <foo> is erased, and the buffer contents are unchanged.
+
+
+
+
+EXAMPLES (command plugin context)
+=================================
+
+Variables available (filled in for example 1)
+-------------------
+ origin{
+  network,         # freenode
+  channel,         # #gentoo-pr0n
+  user},           # Ken69267
+ authorization{
+  user_identified, # True
+  user_trusted,    # False
+  user_master,     # False
+  crypted},        # False
+ msg{
+  raw,             # :Ken69267!~Ken69267@gentoo/developer/ken69267 PRIVMSG #gentoo-pr0n :+!calc 16*3
+  body,            # !calc 16*3
+  prefix,          # !
+  postfix,         #
+  command,         # calc
+  terms},          # 16*3
+ rules{
+  can_respond,     # True
+  can_log},        # True
+ target{
+  network,         # freenode
+  channel,         # #gentoo-pr0n
+  user}            # Ken69267
+
+
+
+Example 1
+---------
+# :Ken69267!~Ken69267@gentoo/developer/ken69267 PRIVMSG #gentoo-pr0n :+!calc 16*3
+
+load msg.terms   # BUFFER: '16*3'
+save stream      # STREAM: '16*3'
+run 'calc.py'    # RUN: '16*3' > calc.py
+                 # STREAM: '1337'
+# stream is sent to target (through appropriate conduits)
+
+
+Example 2
+---------
+# :Ken69267!~Ken69267@gentoo/developer/ken69267 PRIVMSG #gentoo-pr0n :+!portfolio
+
+load origin.user                   # BUFFER: 'Ken69267'
+save stream                        # STREAM: 'Ken69267'
+run 'papertrading.py -portfolio'   # RUN: 'Ken69267' > papertrading.py -portfolio
+                                   # STREAM: 'You have $69 and various shit'
+# stream is sent to target (through appropriate conduits)
+
+
+Example 3
+---------
+# :Ken69267!~Ken69267@gentoo/developer/ken69267 PRIVMSG #gentoo-pr0n :+!figlet banana taco wut
+
+run 'figlet -w62' msg.terms  # RUN: figlet -w62 'banana taco wut'
+                             # STREAM: LOTS OF SPAM
+# stream is sent to target (through appropriate conduits)
+
+
+Example 4
+---------
+# :Ken69267!~Ken69267@gentoo/developer/ken69267 PRIVMSG #gentoo-pr0n :+!lart ed-209
+
+load msg.terms        # BUFFER: 'ed-209'
+save target.user      # TARGET.USER: 'ed-209'
+append ' is a taco'   # BUFFER: 'ed-209 is a taco'
+save stream           # STREAM: 'ed-209 is a taco'
+# stream is sent to target (now freenode/#gentoo-pr0n/ed-209)
+
+
+Example 5
+---------
+# :Ken69267!~Ken69267@gentoo/developer/ken69267 PRIVMSG #gentoo-pr0n :+!wiki I like bananas
+
+load msg.terms        # BUFFER: I like bananas
+filter htmlquery      # BUFFER: I+like+bananas
+save stream           # STREAM: I+like+bananas
+run wikipedia.cs      # RUN: 'I+like+bananas' > wikipedia.cs
+                      # STREAM: 'Bananas &nbspare yummy'
+load stream           # BUFFER: 'Bananas &nbspare yummy'
+filter htmlunescape   # BUFFER: 'Bananas are yummy'
+save stream           # STREAM: 'Bananas are yummy'
+# stream is sent to target (now freenode/#gentoo-pr0n/ed-209)
