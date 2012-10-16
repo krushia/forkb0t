@@ -53,6 +53,43 @@ import plugger
 ircQueue = Queue.Queue()
 #outQueue = Queue.Queue()
 
+class streamlang:
+	self.buf = ''
+	self.stream = ''
+	self.error = ''
+	commands = {'append':self.append, 'filter':self.filt, 'load':self.load, 'run':self.run, 'save':self.save}
+	for line in self.code:
+		if line.startswith('#'):
+			continue
+		
+	def append(self, var):
+		self.buf = self.buf
+	def filt(self, filtname):
+		pass
+	def load(self, var):
+		if var.startswith("'''"):
+			self.buf = 'asdf'
+		elif var.startswith("'"):
+			self.buf = 'asdf'
+		elif var == 'error':
+			self.buf = self.error
+		elif var == 'stream':
+			self.buf = self.stream
+		else:
+			self.buf = self.getVarFromString(var)
+	def run(self, params):
+		pass
+	def save(self, var):
+		if var == 'error':
+			self.error = self.buf
+		elif var == 'stream':
+			self.stream = self.buf
+		else:
+			self.buf = self.getVarFromString(var)
+	def getVarFromString(self, string):
+		pass
+	
+
 
 class doIRC(threading.Thread):
 	def __init__(self, name):
